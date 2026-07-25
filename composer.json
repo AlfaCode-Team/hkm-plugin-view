@@ -1,0 +1,15 @@
+{
+    "name": "alfacode-team/hkm-plugin-view",
+    "description": "HKM Kernel plugin providing 'view.rendering'.",
+    "type": "library",
+    "license": "MIT",
+    "keywords": ["hkm-kernel", "plugin", "php", "view.rendering"],
+    "require": {
+        "php": ">=8.4"
+    },
+    "autoload": {
+        "psr-4": {
+            "Plugins\\View\\": ""
+        }
+    }
+}
