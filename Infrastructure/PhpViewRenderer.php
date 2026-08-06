@@ -105,7 +105,13 @@ final class PhpViewRenderer implements ViewRendererContract
         $this->prepareTemplateData($saveData);
 
         $output = (function (string $view): string {
-            extract($this->tempData);
+            // NOTE: this eval()s the string as a template. It is only safe for
+            // FIRST-PARTY template text — never pass request data here.
+            $esc     = static fn (mixed $v): string => esc($v);
+            $escAttr = static fn (mixed $v): string => esc_attr($v);
+            $escUrl  = static fn (mixed $v): string => esc_url($v);
+
+            extract($this->tempData, EXTR_SKIP);
             ob_start();
             eval('?>' . $view);
 
@@ -227,21 +233,73 @@ final class PhpViewRenderer implements ViewRendererContract
         $this->renderVars['start'] = microtime(true);
     }
 
+    /**
+     * True when $real (an already-resolved realpath) sits inside a configured
+     * view root. Comparison is on the canonical path WITH a trailing separator,
+     * so "/var/views-evil" cannot pass as a child of "/var/views".
+     */
+    private function isUnderViewRoot(string $real): bool
+    {
+        foreach ($this->allowedRoots() as $root) {
+            $canonical = realpath($root);
+            if ($canonical === false) {
+                continue;
+            }
+            $canonical = rtrim($canonical, DIRECTORY_SEPARATOR) . DIRECTORY_SEPARATOR;
+            if (str_starts_with($real, $canonical)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * Every directory a view may legitimately live under: the global cascade
+     * plus each registered namespace's own directories.
+     *
+     * @return list<string>
+     */
+    private function allowedRoots(): array
+    {
+        $roots = $this->viewPaths;
+        foreach ($this->namespaces as $dirs) {
+            foreach ((array) $dirs as $dir) {
+                $roots[] = (string) $dir;
+            }
+        }
+
+        return $roots;
+    }
+
     private function resolveViewFile(): void
     {
         $this->renderVars['file'] = false;
         $view = $this->renderVars['view'];
 
+        // An absolute path used to be require()d verbatim. Any caller that let
+        // a view name reach here from request data therefore had local file
+        // inclusion — and since the file is require()d, inclusion of a .php file
+        // is remote code execution. Absolute paths are still accepted (layouts
+        // and decorators resolve to them internally) but ONLY when the resolved
+        // realpath sits under a configured view root.
         $viewIsAbsolute = str_starts_with($view, DIRECTORY_SEPARATOR);
-        if ($viewIsAbsolute && is_file($view)) {
-            $this->renderVars['file'] = $view;
+        if ($viewIsAbsolute) {
+            $real = realpath($view);
+            if ($real !== false && is_file($real) && $this->isUnderViewRoot($real)) {
+                $this->renderVars['file'] = $real;
 
-            return;
+                return;
+            }
+
+            throw ViewException::forInvalidFile($view);
         }
 
         foreach ($this->candidateDirs($view, $relative) as $dir) {
             $fullPath = realpath(rtrim($dir, '/') . DIRECTORY_SEPARATOR . ltrim($relative, '/'));
-            if ($fullPath && is_file($fullPath)) {
+            // realpath() resolves ../ and symlinks, so re-check containment:
+            // a view name like "../../../../etc/passwd" resolves OUT of $dir.
+            if ($fullPath && is_file($fullPath) && $this->isUnderViewRoot($fullPath)) {
                 $this->renderVars['file'] = $fullPath;
 
                 return;
@@ -296,7 +354,18 @@ final class PhpViewRenderer implements ViewRendererContract
         $renderVars = $this->renderVars;
 
         $output = (function (): string {
-            extract($this->tempData);
+            // Templates are plain PHP and are NOT auto-escaped, so bind the
+            // escaping primitives into scope. They are also available as global
+            // functions; binding them as well means a template still has an
+            // escape hatch if this plugin is used without its composer autoload.
+            //
+            // EXTR_SKIP: template data must never clobber $esc — otherwise a
+            // payload with an "esc" key would neutralise every escape on the page.
+            $esc     = static fn (mixed $v): string => esc($v);
+            $escAttr = static fn (mixed $v): string => esc_attr($v);
+            $escUrl  = static fn (mixed $v): string => esc_url($v);
+
+            extract($this->tempData, EXTR_SKIP);
             ob_start();
             require $this->renderVars['file'];
 
