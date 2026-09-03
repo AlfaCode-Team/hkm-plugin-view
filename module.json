@@ -1,7 +1,7 @@
 {
     "name": "view",
-    "version": "1.0.2",
-    "kernel": "^1.0",
+    "version": "1.0.4",
+    "kernel": "^1.13.1",
     "solves": "view.rendering",
     "type": "module",
 
